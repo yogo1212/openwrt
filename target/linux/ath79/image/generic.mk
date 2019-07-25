@@ -43,6 +43,32 @@ define Build/cybertan-trx
 	-rm $@-empty.bin
 endef
 
+define Build/mkmylofw_16m
+  $(eval device_id=$(word 1,$(1)))
+  $(eval revision=$(word 2,$(1)))
+
+  # this applies to 16m compex WPJ devices
+  # the default boot command tries 0x9f680000 first and fails when the remains
+  # of the stock image are sill there - resulting in an infinite boot loop.
+  # if the firmware doesn't reach that address, the size parameter is grown
+  # a better solution could be to conditionally add an empty block (-b)
+
+  # the cpximg command in u-boot rejects images with sizes that aren't
+  # aligned to erase block boundary
+  # the 'padding' could be done in mkmylofw but it isn't clear whether all
+  # devices need it
+  # that might require adding the board revisions to mkmylofw
+  size="$$(python -c \
+    "import os, math; \
+    size=math.ceil(os.stat('$@').st_size / 65536) * 65536; \
+    print(hex(max(0x660000,size)))")"; \
+  $(STAGING_DIR_HOST)/bin/mkmylofw \
+    -B WPE72 -i 0x11f6:$(device_id):0x11f6:$(device_id) -r $(revision) -s 0x1000000 \
+    -p0x30000:$$size:al:0x80060000:"OpenWRT":$@ \
+    $@.new
+  @mv $@.new $@
+endef
+
 define Build/nec-enc
   $(STAGING_DIR_HOST)/bin/nec-enc \
     -i $@ -o $@.new -k $(1)
@@ -306,6 +332,10 @@ define Device/compex_wpj344-16m
   DEVICE_MODEL := WPJ344
   DEVICE_VARIANT := 16M
   SUPPORTED_DEVICES += wpj344
+  IMAGES += cpximg-6A08.bin cpximg-6A06A.bin
+  IMAGE/cpximg-6A08.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x690 3
+  # TODO check whether this board is in circulation anywhere; maybe it's just a preview
+  IMAGE/cpximg-6A06A.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x687 2
 endef
 TARGET_DEVICES += compex_wpj344-16m
 
@@ -317,6 +347,11 @@ define Device/compex_wpj531-16m
   DEVICE_MODEL := WPJ531
   DEVICE_VARIANT := 16M
   SUPPORTED_DEVICES += wpj531
+  IMAGES += cpximg-7A03.bin cpximg-7A04.bin cpximg-7A06.bin cpximg-7A07.bin
+  IMAGE/cpximg-7A03.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x68a 2
+  IMAGE/cpximg-7A04.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x693 3
+  IMAGE/cpximg-7A06.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x693 3
+  IMAGE/cpximg-7A07.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x693 3
 endef
 TARGET_DEVICES += compex_wpj531-16m
 
@@ -328,6 +363,8 @@ define Device/compex_wpj563
   DEVICE_VENDOR := Compex
   DEVICE_MODEL := WPJ563
   SUPPORTED_DEVICES += wpj563
+  IMAGES += cpximg-7A02.bin
+  IMAGE/cpximg-7A02.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | mkmylofw_16m 0x694 2
 endef
 TARGET_DEVICES += compex_wpj563
 
