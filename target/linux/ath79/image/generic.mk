@@ -298,6 +298,17 @@ define Device/comfast_cf-wr650ac-v2
 endef
 TARGET_DEVICES += comfast_cf-wr650ac-v2
 
+define Device/compex_wpj344-16m
+  ATH_SOC := ar9344
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2
+  IMAGE_SIZE := 16128k
+  DEVICE_VENDOR := Compex
+  DEVICE_MODEL := WPJ344
+  DEVICE_VARIANT := 16M
+  SUPPORTED_DEVICES += wpj344
+endef
+TARGET_DEVICES += compex_wpj344-16m
+
 define Device/compex_wpj531-16m
   ATH_SOC := qca9531
   DEVICE_PACKAGES := kmod-usb-core kmod-usb2

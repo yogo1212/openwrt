@@ -114,6 +114,11 @@ ath79_setup_interfaces()
 	ubnt,routerstation)
 		ucidef_set_interfaces_lan_wan "eth1" "eth0"
 		;;
+	compex,wpj344-16m)
+		ucidef_add_switch "switch0" \
+			"0@eth0" "3:lan" "2:wan"
+		# TODO "6@eth1"
+		;;
 	comfast,cf-wr650ac-v1|\
 	comfast,cf-wr650ac-v2)
 		ucidef_add_switch "switch0" \
@@ -331,6 +336,9 @@ ath79_setup_macs()
 	avm,fritz4020)
 		lan_mac=$(fritz_tffs -n maca -i $(find_mtd_part "tffs (1)"))
 		wan_mac=$(fritz_tffs -n macb -i $(find_mtd_part "tffs (1)"))
+		;;
+	compex,wpj344-16m)
+		wan_mac=$(mtd_get_mac_binary u-boot 0x2e018)
 		;;
 	dlink,dir-825-b1)
 		lan_mac=$(mtd_get_mac_text "caldata" 0xffa0)
