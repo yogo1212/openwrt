@@ -320,6 +320,17 @@ define Device/compex_wpj531-16m
 endef
 TARGET_DEVICES += compex_wpj531-16m
 
+define Device/compex_wpj563
+  ATH_SOC := qca9563
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb3 \
+	kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  IMAGE_SIZE := 16128k
+  DEVICE_VENDOR := Compex
+  DEVICE_MODEL := WPJ563
+  SUPPORTED_DEVICES += wpj563
+endef
+TARGET_DEVICES += compex_wpj563
+
 define Device/devolo_dvl1200e
   ATH_SOC := qca9558
   DEVICE_VENDOR := devolo
