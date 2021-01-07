@@ -116,6 +116,15 @@ define Device/asus_rt-ac57u
 endef
 TARGET_DEVICES += asus_rt-ac57u
 
+define Device/cudy_wr2100
+  DTS := WR2100
+  IMAGE_SIZE := 15872k
+  UIMAGE_NAME := R11
+  DEVICE_TITLE := CUDY WR2100
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e wpad-basic
+endef
+TARGET_DEVICES += cudy_wr2100
+
 define Device/dir-860l-b1
   $(Device/seama)
   DTS := DIR-860L-B1
