@@ -25,8 +25,8 @@ _proto_mbim_setup() {
 	local tid=2
 	local ret
 
-	local device apn pincode delay ip4table ip6table $PROTO_DEFAULT_OPTIONS
-	json_get_vars device apn pincode delay auth username password ip4table ip6table $PROTO_DEFAULT_OPTIONS
+	local device ifname want_ifname apn pincode delay ip4table ip6table $PROTO_DEFAULT_OPTIONS
+	json_get_vars device ifname apn pincode delay auth username password ip4table ip6table $PROTO_DEFAULT_OPTIONS
 
 	[ -n "$ctl_device" ] && device=$ctl_device
 
@@ -43,15 +43,23 @@ _proto_mbim_setup() {
 		return 1
 	}
 
+	want_ifname="$ifname"
+
 	devname="$(basename "$device")"
 	devpath="$(readlink -f /sys/class/usbmisc/$devname/device/)"
-	ifname="$( ls "$devpath"/net )"
+	ifname="$(ls "$devpath"/net)"
 
 	[ -n "$ifname" ] || {
 		echo "mbim[$$]" "Failed to find matching interface"
 		proto_notify_error "$interface" NO_IFNAME
 		proto_set_available "$interface" 0
 		return 1
+	}
+
+	[ -n "$want_ifname" -a "$ifname" != "$want_ifname" ] && {
+		ip l set "$ifname" down
+		ip l set "$ifname" name "$want_ifname" && ifname="$want_ifname"
+		ip l set "$ifname" up
 	}
 
 	[ -n "$apn" ] || {
