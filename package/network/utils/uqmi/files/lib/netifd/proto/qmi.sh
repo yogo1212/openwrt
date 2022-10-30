@@ -272,6 +272,9 @@ proto_qmi_setup() {
 
 	echo "Starting network $interface"
 
+	proto_init_update "$ifname" 1
+	proto_send_update "$interface"
+
 	pdptype="$(echo "$pdptype" | awk '{print tolower($0)}')"
 
 	[ "$pdptype" = "ip" -o "$pdptype" = "ipv6" -o "$pdptype" = "ipv4v6" ] || pdptype="ip"
@@ -283,180 +286,42 @@ proto_qmi_setup() {
 		[ "$autoconnect" = 1 ] || autoconnect=""
 	fi
 
+	local families=
 	[ "$pdptype" = "ip" -o "$pdptype" = "ipv4v6" ] && {
-		cid_4=$(uqmi -s -d "$device" --get-client-id wds)
-		if ! [ "$cid_4" -eq "$cid_4" ] 2> /dev/null; then
-			echo "Unable to obtain client ID"
-			proto_notify_error "$interface" NO_CID
-			return 1
-		fi
-
-		uqmi -s -d "$device" --set-client-id wds,"$cid_4" --set-ip-family ipv4 > /dev/null 2>&1
-
-		pdh_4=$(uqmi -s -d "$device" --set-client-id wds,"$cid_4" \
-			--start-network \
-			${apn:+--apn $apn} \
-			${profile:+--profile $profile} \
-			${auth:+--auth-type $auth} \
-			${username:+--username $username} \
-			${password:+--password $password} \
-			${autoconnect:+--autoconnect})
-
-		# pdh_4 is a numeric value on success
-		if ! [ "$pdh_4" -eq "$pdh_4" ] 2> /dev/null; then
-			echo "Unable to connect IPv4"
-			uqmi -s -d "$device" --set-client-id wds,"$cid_4" --release-client-id wds > /dev/null 2>&1
-			proto_notify_error "$interface" CALL_FAILED
-			return 1
-		fi
-
-		# Check data connection state
-		connstat=$(uqmi -s -d "$device" --set-client-id wds,"$cid_4" --get-data-status)
-		[ "$connstat" == '"connected"' ] || {
-			echo "No data link!"
-			uqmi -s -d "$device" --set-client-id wds,"$cid_4" --release-client-id wds > /dev/null 2>&1
-			proto_notify_error "$interface" CALL_FAILED
-			return 1
-		}
+		families="$families 4"
+		[ "$dhcp" != 0 ] && proto_export DHCP="1"
 	}
 
 	[ "$pdptype" = "ipv6" -o "$pdptype" = "ipv4v6" ] && {
-		cid_6=$(uqmi -s -d "$device" --get-client-id wds)
-		if ! [ "$cid_6" -eq "$cid_6" ] 2> /dev/null; then
-			echo "Unable to obtain client ID"
-			proto_notify_error "$interface" NO_CID
-			return 1
-		fi
-
-		uqmi -s -d "$device" --set-client-id wds,"$cid_6" --set-ip-family ipv6 > /dev/null 2>&1
-
-		pdh_6=$(uqmi -s -d "$device" --set-client-id wds,"$cid_6" \
-			--start-network \
-			${apn:+--apn $apn} \
-			${profile:+--profile $profile} \
-			${auth:+--auth-type $auth} \
-			${username:+--username $username} \
-			${password:+--password $password} \
-			${autoconnect:+--autoconnect})
-
-		# pdh_6 is a numeric value on success
-		if ! [ "$pdh_6" -eq "$pdh_6" ] 2> /dev/null; then
-			echo "Unable to connect IPv6"
-			uqmi -s -d "$device" --set-client-id wds,"$cid_6" --release-client-id wds > /dev/null 2>&1
-			proto_notify_error "$interface" CALL_FAILED
-			return 1
-		fi
-
-		# Check data connection state
-		connstat=$(uqmi -s -d "$device" --set-client-id wds,"$cid_6" --get-data-status)
-		[ "$connstat" == '"connected"' ] || {
-			echo "No data link!"
-			uqmi -s -d "$device" --set-client-id wds,"$cid_6" --release-client-id wds > /dev/null 2>&1
-			proto_notify_error "$interface" CALL_FAILED
-			return 1
-		}
+		families="$families 6"
+		[ -n "$dhcpv6" -a "$dhcpv6" != 0 ] && proto_export DHCPV6="1"
 	}
 
-	echo "Setting up $ifname"
-	proto_init_update "$ifname" 1
-	proto_set_keep 1
-	proto_add_data
-	[ -n "$pdh_4" ] && {
-		json_add_string "cid_4" "$cid_4"
-		json_add_string "pdh_4" "$pdh_4"
-	}
-	[ -n "$pdh_6" ] && {
-		json_add_string "cid_6" "$cid_6"
-		json_add_string "pdh_6" "$pdh_6"
-	}
-	proto_close_data
-	proto_send_update "$interface"
+	proto_export DEVICE="$device"
+	proto_export IFNAME="$ifname"
+	proto_export INTERFACE="$interface"
+	proto_export START_NETWORK_ARGS="${apn:+--apn $apn} \
+		${profile:+--profile $profile} \
+		${auth:+--auth-type $auth} \
+		${username:+--username $username} \
+		${password:+--password $password} \
+		${autoconnect:+--autoconnect}"
 
-	local zone="$(fw3 -q network "$interface" 2>/dev/null)"
+	# 'inherit'
+	# __network_ifstatus "$var" "$INTERFACE" ".$var"
+	# doesn't work for defaultroute and peerdns
+	proto_export DEFAULTROUTE="$defaultroute"
+	proto_export IP4TABLE="$ip4table"
+	proto_export IP6TABLE="$ip6table"
+	proto_export PEERDNS="$peerdns"
+	proto_export METRIC="$metric"
 
-	[ -n "$pdh_6" ] && {
-		if [ -z "$dhcpv6" -o "$dhcpv6" = 0 ]; then
-			json_load "$(uqmi -s -d $device --set-client-id wds,$cid_6 --get-current-settings)"
-			json_select ipv6
-			json_get_var ip_6 ip
-			json_get_var gateway_6 gateway
-			json_get_var dns1_6 dns1
-			json_get_var dns2_6 dns2
-			json_get_var ip_prefix_length ip-prefix-length
-
-			proto_init_update "$ifname" 1
-			proto_set_keep 1
-			proto_add_ipv6_address "$ip_6" "128"
-			proto_add_ipv6_prefix "${ip_6}/${ip_prefix_length}"
-			proto_add_ipv6_route "$gateway_6" "128"
-			[ "$defaultroute" = 0 ] || proto_add_ipv6_route "::0" 0 "$gateway_6" "" "" "${ip_6}/${ip_prefix_length}"
-			[ "$peerdns" = 0 ] || {
-				proto_add_dns_server "$dns1_6"
-				proto_add_dns_server "$dns2_6"
-			}
-			[ -n "$zone" ] && {
-				proto_add_data
-				json_add_string zone "$zone"
-				proto_close_data
-			}
-			proto_send_update "$interface"
-		else
-			json_init
-			json_add_string name "${interface}_6"
-			json_add_string ifname "@$interface"
-			json_add_string proto "dhcpv6"
-			[ -n "$ip6table" ] && json_add_string ip6table "$ip6table"
-			proto_add_dynamic_defaults
-			# RFC 7278: Extend an IPv6 /64 Prefix to LAN
-			json_add_string extendprefix 1
-			[ -n "$zone" ] && json_add_string zone "$zone"
-			json_close_object
-			ubus call network add_dynamic "$(json_dump)"
-		fi
-	}
-
-	[ -n "$pdh_4" ] && {
-		if [ "$dhcp" = 0 ]; then
-			json_load "$(uqmi -s -d $device --set-client-id wds,$cid_4 --get-current-settings)"
-			json_select ipv4
-			json_get_var ip_4 ip
-			json_get_var gateway_4 gateway
-			json_get_var dns1_4 dns1
-			json_get_var dns2_4 dns2
-			json_get_var subnet_4 subnet
-
-			proto_init_update "$ifname" 1
-			proto_set_keep 1
-			proto_add_ipv4_address "$ip_4" "$subnet_4"
-			proto_add_ipv4_route "$gateway_4" "128"
-			[ "$defaultroute" = 0 ] || proto_add_ipv4_route "0.0.0.0" 0 "$gateway_4"
-			[ "$peerdns" = 0 ] || {
-				proto_add_dns_server "$dns1_4"
-				proto_add_dns_server "$dns2_4"
-			}
-			[ -n "$zone" ] && {
-				proto_add_data
-				json_add_string zone "$zone"
-				proto_close_data
-			}
-			proto_send_update "$interface"
-		else
-			json_init
-			json_add_string name "${interface}_4"
-			json_add_string ifname "@$interface"
-			json_add_string proto "dhcp"
-			[ -n "$ip4table" ] && json_add_string ip4table "$ip4table"
-			proto_add_dynamic_defaults
-			[ -n "$zone" ] && json_add_string zone "$zone"
-			json_close_object
-			ubus call network add_dynamic "$(json_dump)"
-		fi
-	}
+	proto_run_command "$interface" /lib/netifd/qmi.script $families
 }
 
 qmi_wds_stop() {
-	local cid="$1"
-	local pdh="$2"
+	local cid pdh
+	json_get_vars cid pdh
 
 	[ -n "$cid" ] || return
 
@@ -476,21 +341,25 @@ qmi_wds_stop() {
 proto_qmi_teardown() {
 	local interface="$1"
 
-	local device cid_4 pdh_4 cid_6 pdh_6
+	local device cid pdh
 	json_get_vars device
 
 	[ -n "$ctl_device" ] && device="$ctl_device"
 
 	echo "Stopping network $interface"
 
-	json_load "$(ubus call network.interface.$interface status)"
-	json_select data
-	json_get_vars cid_4 pdh_4 cid_6 pdh_6
-
 	proto_qmi_inject_uqmi
 
-	qmi_wds_stop "$cid_4" "$pdh_4"
-	qmi_wds_stop "$cid_6" "$pdh_6"
+	json_load "$(ubus call "network.interface.$interface" status)"
+	json_select data
+	json_select ipv4 && {
+		qmi_wds_stop
+		json_select ..
+	}
+	json_select ipv6 && {
+		qmi_wds_stop
+		json_select ..
+	}
 
 	proto_init_update "*" 0
 	proto_send_update "$interface"

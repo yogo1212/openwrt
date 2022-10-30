@@ -1,0 +1,274 @@
+#!/bin/sh
+
+. /lib/functions/network.sh
+. /lib/netifd/netifd-proto.sh
+. /usr/share/libubox/jshn.sh
+
+uqmi() {
+	local t="${TIMEOUT-10}"
+
+	timeout -k "$(( t + 2 ))" "$(( t + 1 ))" /sbin/uqmi -t "$(( t * 1000 ))" "$@"
+}
+
+release_client_id() {
+	local cid="$1"
+
+	[ -n "$cid" ] || return 0
+
+	uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --release-client-id wds > /dev/null 2>&1
+}
+
+stop_network() {
+	local cid="$1"
+	local pdh="$1"
+
+	[ -n "$cid" ] || return 0
+
+	# TODO does this affect registration?
+	uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --stop-network 0xffffffff --autoconnect > /dev/null 2>&1
+
+	[ -z "$pdh" ] || uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --stop-network "$pdh" > /dev/null 2>&1
+}
+
+load_data() {
+	local ip_family="$1"
+
+	json_load "$(ubus call "network.interface.$INTERFACE" status)"
+	json_select data
+	json_select "ipv$ip_family" >/dev/null 2>&1
+}
+
+check_connectivity() {
+	local cid="$1"
+	local connstat
+
+	connstat="$(uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --get-data-status)"
+	[ "$connstat" == '"connected"' ] || {
+		echo "invalid connection state: $connstat" >&2
+		return 1
+	}
+}
+
+set_up_addressing() {
+	local ip_family="$1"
+	local cid="$2"
+	local child_interface="${INTERFACE}_${ip_family}"
+
+	json_load "$(uqmi -s -d "$DEVICE" --set-client-id "wds,$cid" --get-current-settings)"
+
+	if [ "$ip_family" -eq 4 -a "$DHCP" != 1 ]; then
+		local ipv4_ip ipv4_subnet ipv4_gw ipv4_dns1 ipv4_dns2
+		json_select ipv4
+		json_get_var ipv4_ip ip
+		json_get_var ipv4_gw gateway
+		json_get_var ipv4_dns1 dns1
+		json_get_var ipv4_dns2 dns2
+		json_get_var ipv4_subnet subnet
+	elif [ "$ip_family" -eq 6 -a "$DHCPV6" != 1 ]; then
+		local ipv6_ip ipv6_prefix_length ipv6_gw ipv6_dns1 ipv6_dns2
+		json_select ipv6
+		json_get_var ipv6_ip ip
+		json_get_var ipv6_gateway gateway
+		json_get_var ipv6_dns1 dns1
+		json_get_var ipv6_dns2 dns2
+		json_get_var ipv6_prefix_length ip-prefix-length
+	elif ubus list "network.interface.$child_interface" >/dev/null 2>&1; then
+		# look for new DHCP server (interface will go down briefly)
+		ubus call "network.interface.$child_interface" renew
+		# continue in case there was a reload or so
+	fi
+
+	json_init
+	json_add_string name "$child_interface"
+	json_add_string ifname "@$INTERFACE"
+
+	if [ "$ip_family" -eq 4 ]; then
+		if [ "$DHCP" = 1 ]; then
+			json_add_string proto "dhcp"
+		else
+			json_add_string proto "static"
+
+			json_add_array ipaddr
+			json_add_string "" "$ipv4_ip"
+			json_close_array
+
+			json_add_string netmask "$ipv4_subnet"
+
+			# TODO there was a mask 128 here that, afaics, shouldn't have made it past
+			# if (route->mask > (v6 ? 128 : 32))
+			# check!
+			json_add_string gateway "$ipv4_gw"
+
+			[ "$PEERDNS" = 0 ] || {
+				json_add_array dns
+				json_add_string "" "$ipv4_dns1"
+				json_add_string "" "$ipv4_dns2"
+				json_close_array
+			}
+		fi
+	elif [ "$ip_family" -eq 6 ]; then
+		if [ "$DHCPV6" = 1 ]; then
+			json_add_string proto "dhcpv6"
+			# RFC 7278: Extend an IPv6 /64 Prefix to LAN
+			json_add_string extendprefix 1
+		else
+			json_add_string proto "static"
+
+			json_add_array ipaddr
+			# TODO use subnet to calculate mask?
+			json_add_string "" "$ipv6_ip/128"
+			json_close_array
+
+			json_add_string ip6gw "$ipv6_gw"
+
+			json_add_array ip6prefix
+			json_add_string "" "${ipv6_ip}/${ipv6_prefix_length}"
+			json_close_array
+
+			[ "$PEERDNS" = 0 ] || {
+				json_add_array dns
+				json_add_string "" "$ipv6_dns1"
+				json_add_string "" "$ipv6_dns2"
+				json_close_array
+			}
+		fi
+	fi
+
+	[ "$DEFAULTROUTE" = 0 ] || json_add_string defaultroute "$DEFAULTROUTE"
+	[ -n "$IP4TABLE" ] && json_add_string ip4table "$IP4TABLE"
+	[ -n "$IP6TABLE" ] && json_add_string ip6table "$IP6TABLE"
+
+	local zone="$(fw3 -q network "$INTERFACE" 2>/dev/null)"
+	[ -n "$zone" ] && json_add_string zone "$zone"
+
+	# TODO find a way to make this useful:
+	# proto_add_dynamic_defaults
+	[ -n "$DEFAULTROUTE" ] && json_add_int defaultroute "$DEFAULTROUTE"
+	[ -n "$METRIC" ] && json_add_int metric "$METRIC"
+	[ -n "$PEERDNS" ] && json_add_int peerdns "$PEERDNS"
+
+	json_close_object
+	ubus call network add_dynamic "$(json_dump)"
+}
+
+# before and after reconnect, data.ipvX must be either unset, false, or contain only valid IDs
+reconnect() {
+	local ip_family="$1"
+
+	proto_init_update "$IFNAME" 1
+	proto_set_keep 1
+	proto_add_data
+	json_add_boolean "ipv$ip_family" 0
+	proto_close_data
+	proto_send_update "$INTERFACE"
+
+	local cid="$(uqmi -s -d "$DEVICE" --get-client-id wds)"
+	if ! [ "$cid" -eq "$cid" ] 2> /dev/null; then
+		echo "Unable to obtain client ID" >&2
+		echo NO_CID
+		return 1
+	fi
+
+	uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --set-ip-family "ipv$ip_family" > /dev/null 2>&1
+
+	local pdh="$(uqmi -s -d "$DEVICE" --set-client-id wds,"$cid" --start-network $START_NETWORK_ARGS)"
+
+	# pdh is a numeric value on success
+	if ! [ "$pdh" -eq "$pdh" ] 2> /dev/null; then
+		release_client_id "$cid"
+		echo "invalid packed data handle: $pdh" >&2
+		echo NO_PDH
+		return 1
+	fi
+
+	# TODO consider testing more than once before abandoning
+	# need to check whether that requires waiting for the network
+	if ! check_connectivity "$cid"; then
+		stop_network "$cid" "$pdh"
+		release_client_id "$cid"
+		echo CALL_FAILED
+		return 1
+	fi
+
+	# TODO avoid setting $INTERFACE back up after it's been set down
+	proto_init_update "$IFNAME" 1
+	proto_set_keep 1
+	proto_add_data
+	json_add_object "ipv$ip_family"
+	json_add_string cid "$cid"
+	json_add_string pdh "$pdh"
+	json_close_object
+	proto_close_data
+	proto_send_update "$INTERFACE"
+
+	set_up_addressing "$ip_family" "$cid"
+}
+
+probe() {
+	local ip_family="$1"
+	local child_interface="${INTERFACE}_${ip_family}"
+
+	local err
+
+	if ! load_data "$ip_family"; then
+		reconnect "$ip_family" >/dev/null || return
+		load_data "$ip_family" || return
+	fi
+
+	local cid pdh
+	json_get_vars cid pdh
+
+	check_connectivity "$cid" && return
+
+	stop_network "$cid" "$pdh"
+	release_client_id "$cid"
+
+	if ! reconnect "$ip_family"; then
+		proto_notify_error "$child_interface" CALL_FAILED
+		return 1
+	fi
+
+	return 0
+}
+
+stop=0
+
+trap 'stop=1' TERM
+
+while [ "$stop" = 0 ]; do
+	# stay alive as long as least one IP family interface is up
+	alive=
+
+	for ip_family in "$@"; do
+		if probe "$ip_family"; then
+			alive="1$alive"
+
+			network_is_up "$INTERFACE" && continue
+			up=1
+		else
+			! network_is_up "$INTERFACE" && continue
+			up=0
+		fi
+
+# TODO interface might not exist - then, this is garbage
+		proto_init_update "$IFNAME" "$up"
+		proto_set_keep 1
+		proto_send_update "${INTERFACE}_${ip_family}"
+	done
+
+	[ "${#alive}" -eq 0 ] && break
+
+	# make sure to not wait for sleep through a signal
+	sleep 60 &
+	wait $!
+done
+
+for ip_family in "$@"; do
+	if load_data "$ip_family"; then
+		json_get_vars cid pdh
+		stop_network "$cid" "$pdh"
+		release_client_id "$cid"
+	fi
+done
+
+proto_notify_error "$INTERFACE" NO_DATA_CONNECTIONS
